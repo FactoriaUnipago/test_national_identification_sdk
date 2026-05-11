@@ -109,15 +109,15 @@
       qualityGlareWarn: '✨ Posible reflejo — ajuste el ángulo',
     },
 
-    // Theme (CSS custom properties)
+    // Theme (CSS custom properties) — light by default
     theme: {
       fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      bg: '#0f172a',
-      card: '#1e293b',
-      border: '#334155',
-      text: '#f1f5f9',
-      textSecondary: '#94a3b8',
-      textMuted: '#64748b',
+      bg: '#f8fafc',
+      card: '#ffffff',
+      border: '#e2e8f0',
+      text: '#1e293b',
+      textSecondary: '#64748b',
+      textMuted: '#94a3b8',
       accentGreen: '#10b981',
       accentGreenHover: '#059669',
       accentBlue: '#3b82f6',
@@ -144,12 +144,12 @@
     :host {
       display: block;
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      color: #f1f5f9;
-      --bg: #0f172a;
-      --card: #1e293b;
-      --border: #334155;
-      --text-secondary: #94a3b8;
-      --text-muted: #64748b;
+      color: #1e293b;
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --border: #e2e8f0;
+      --text-secondary: #64748b;
+      --text-muted: #94a3b8;
       --accent-green: #10b981;
       --accent-green-hover: #059669;
       --accent-blue: #3b82f6;
@@ -163,6 +163,7 @@
       border: 1px solid var(--border);
       border-radius: 12px;
       overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
     }
     .sdk-header {
       padding: 1rem 1.25rem;
@@ -245,7 +246,7 @@
       border: 1px solid var(--border);
       color: var(--text-secondary);
     }
-    .btn-outline:hover:not(:disabled) { border-color: var(--text-muted); color: #e2e8f0; }
+    .btn-outline:hover:not(:disabled) { border-color: var(--text-muted); color: var(--text-secondary); background: var(--bg); }
     .btn-danger {
       background: transparent;
       border: 1px solid var(--error);
@@ -264,7 +265,7 @@
       font-weight: 700;
       font-family: inherit;
       cursor: pointer;
-      box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3);
+      box-shadow: 0 4px 14px rgba(16, 185, 129, 0.25);
       transition: transform 0.15s, box-shadow 0.2s, opacity 0.2s;
       margin-top: 0.5rem;
     }
@@ -691,6 +692,7 @@
       host.style.setProperty('--error', t.error);
       host.style.setProperty('--warning', t.warning);
       if (t.fontFamily) host.style.fontFamily = t.fontFamily;
+      if (t.text) host.style.color = t.text;
     }
 
     _applyText() {
