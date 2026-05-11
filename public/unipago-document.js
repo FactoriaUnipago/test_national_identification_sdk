@@ -4,11 +4,17 @@
  * A framework-agnostic Web Component for capturing and analyzing
  * Dominican national ID cards (cédula).
  * 
+ * Uses a 3-step presigned S3 upload flow:
+ *   1. POST /session         → get presigned upload URLs
+ *   2. PUT to S3             → upload images directly
+ *   3. POST /process/{id}    → trigger analysis
+ *   4. GET  /results/{id}    → poll for results (OAuth2)
+ * 
  * Usage:
  *   <script src="unipago-document.js"></script>
  *   <unipago-document
  *     api-key="pk_test_123"
- *     api-url="https://...external/document/analyze"
+ *     api-url="https://...external/document"
  *     results-url="https://...external/document/results"
  *     numero-identificacion="40238295428"
  *     oauth-client-id="..."
@@ -18,19 +24,19 @@
  *   ></unipago-document>
  * 
  * Events:
- *   - unipago-document-complete  → { detail: { requestId, status, score, ... } }
+ *   - unipago-document-complete  → { detail: { sessionId, status, score, ... } }
  *   - unipago-document-error     → { detail: { error: "message" } }
  * 
- * @version 1.0.0
+ * @version 2.0.0
  */
 (() => {
   const MAX_WIDTH = 1920;
-  const JPEG_QUALITY = 0.95;
+  const JPEG_QUALITY = 0.85;
   const POLL_INTERVAL_MS = 3000;
   const OPENCV_CDN = 'https://docs.opencv.org/4.7.0/opencv.js';
   const JSCANIFY_CDN = 'https://cdn.jsdelivr.net/gh/puffinsoft/jscanify@master/src/jscanify.min.js';
   const AUTO_CAPTURE_STABLE_MS = 1500;
-  const DETECTION_INTERVAL_MS = 200;
+  const DETECTION_INTERVAL_MS = 100;
 
   const STYLES = `
     :host {
@@ -914,49 +920,107 @@
       this.$('donePhase').classList.toggle('hidden', phase !== 'done');
     }
 
-    // ── Submit flow ─────────────────────────────
+    // ── Helper: convert base64 to Blob for S3 upload ──
+    _base64ToBlob(b64, contentType = 'application/octet-stream') {
+      const byteChars = atob(b64);
+      const byteArray = new Uint8Array(byteChars.length);
+      for (let i = 0; i < byteChars.length; i++) {
+        byteArray[i] = byteChars.charCodeAt(i);
+      }
+      return new Blob([byteArray], { type: contentType });
+    }
+
+    // ── Submit flow (3-step presigned S3 upload) ─────
     async _submit() {
       if (!this.apiUrl) return this._emitError("Falta atributo 'api-url'.");
       if (!this.apiKey) return this._emitError("Falta atributo 'api-key'.");
       if (!this.numeroId) return this._emitError("Falta atributo 'numero-identificacion'.");
 
+      const baseUrl = this.apiUrl.replace(/\/+$/, '');
+
       this._showPhase('loading');
-      this.$('loadingText').textContent = 'Enviando documento...';
+      this.$('loadingText').textContent = 'Creando sesión...';
       this.$('loadingDetail').textContent = '';
 
       try {
-        // ── 1. POST document ──────────────────
-        const url = `${this.apiUrl}/${this.numeroId}`;
-        const response = await fetch(url, {
+        // ── 1. POST /session → get presigned upload URLs ──
+        const sessionRes = await fetch(`${baseUrl}/session`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'x-api-key': this.apiKey,
           },
           body: JSON.stringify({
-            frontImageBase64: this._state.frontBase64,
-            backImageBase64: this._state.backBase64,
+            numeroIdentificacion: this.numeroId,
           }),
         });
 
-        if (!response.ok) {
-          const errData = await response.json().catch(() => ({ error: response.statusText }));
-          this._emitError(`Error ${response.status}: ${JSON.stringify(errData)}`);
-          this._showDone(false, `Error ${response.status}`);
+        if (!sessionRes.ok) {
+          const errData = await sessionRes.json().catch(() => ({ error: sessionRes.statusText }));
+          this._emitError(`Error creando sesión (${sessionRes.status}): ${JSON.stringify(errData)}`);
+          this._showDone(false, `Error ${sessionRes.status}`);
           return;
         }
 
-        const postResult = await response.json();
-        const requestId = postResult.requestId;
+        const session = await sessionRes.json();
+        const sessionId = session.sessionId;
+        const uploadUrls = session.uploadUrls;
 
-        if (!requestId || (postResult.status !== 'PROCESSING' && postResult.status !== 'PENDING')) {
-          // Final result returned immediately
-          this._emitComplete(postResult);
-          this._showDone(true);
+        if (!sessionId || !uploadUrls?.front) {
+          this._emitError('Respuesta de sesión inválida: falta sessionId o uploadUrls');
+          this._showDone(false, 'Respuesta inválida del servidor');
           return;
         }
 
-        // ── 2. Get OAuth2 token ───────────────
+        // ── 2. Upload images directly to S3 via presigned PUT URLs ──
+        this.$('loadingText').textContent = 'Subiendo imagen frontal...';
+
+        const frontBlob = this._base64ToBlob(this._state.frontBase64);
+        const frontUploadRes = await fetch(uploadUrls.front, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: frontBlob,
+        });
+
+        if (!frontUploadRes.ok) {
+          this._emitError(`Error subiendo imagen frontal: ${frontUploadRes.status}`);
+          this._showDone(false, 'Error subiendo imagen');
+          return;
+        }
+
+        if (this._state.backBase64 && uploadUrls.back) {
+          this.$('loadingText').textContent = 'Subiendo imagen reversa...';
+
+          const backBlob = this._base64ToBlob(this._state.backBase64);
+          const backUploadRes = await fetch(uploadUrls.back, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: backBlob,
+          });
+
+          if (!backUploadRes.ok) {
+            this._emitError(`Error subiendo imagen reversa: ${backUploadRes.status}`);
+            this._showDone(false, 'Error subiendo imagen');
+            return;
+          }
+        }
+
+        // ── 3. POST /process/{sessionId} → trigger analysis ──
+        this.$('loadingText').textContent = 'Iniciando análisis...';
+
+        const processRes = await fetch(`${baseUrl}/process/${sessionId}`, {
+          method: 'POST',
+          headers: { 'x-api-key': this.apiKey },
+        });
+
+        if (!processRes.ok) {
+          const errData = await processRes.json().catch(() => ({ error: processRes.statusText }));
+          this._emitError(`Error iniciando procesamiento (${processRes.status}): ${JSON.stringify(errData)}`);
+          this._showDone(false, `Error ${processRes.status}`);
+          return;
+        }
+
+        // ── 4. Get OAuth2 token for polling ───────────────
         this.$('loadingText').textContent = 'Obteniendo token de autenticación...';
 
         const basicAuth = btoa(`${this.oauthClientId}:${this.oauthClientSecret}`);
@@ -975,7 +1039,7 @@
         if (!tokenRes.ok) throw new Error(`Token error: ${tokenRes.status}`);
         const accessToken = (await tokenRes.json()).access_token;
 
-        // ── 3. Poll for results ───────────────
+        // ── 5. Poll for results ───────────────
         this.$('loadingText').textContent = 'Analizando documento...';
         let pollCount = 0;
 
@@ -984,7 +1048,7 @@
           this.$('loadingDetail').textContent = `Consultando resultados (intento #${pollCount})...`;
 
           try {
-            const pollRes = await fetch(`${this.resultsUrl}/${requestId}`, {
+            const pollRes = await fetch(`${this.resultsUrl}/${sessionId}`, {
               method: 'GET',
               headers: { 'Authorization': `Bearer ${accessToken}` },
             });
@@ -993,9 +1057,9 @@
 
             const pollData = await pollRes.json();
 
-            if (pollData.status && pollData.status !== 'PROCESSING' && pollData.status !== 'PENDING') {
+            if (pollData.status && pollData.status !== 'PROCESSING' && pollData.status !== 'PENDING' && pollData.status !== 'PROCESANDO' && pollData.status !== 'PENDIENTE') {
               clearInterval(pollInterval);
-              const ok = pollData.status !== 'FAILED' && pollData.status !== 'ERROR';
+              const ok = pollData.status !== 'FAILED' && pollData.status !== 'ERROR' && pollData.status !== 'FALLIDO';
               if (ok) {
                 this._emitComplete(pollData);
                 this._showDone(true);
