@@ -866,19 +866,17 @@
     _captureFrame() {
       const video = this.$('cameraVideo');
       const canvas = this.$('cameraCanvas');
+      const side = this._state.activeSide;
 
-      // Full frame capture
+      // Full frame capture at native resolution (no downscale)
       let w = video.videoWidth;
       let h = video.videoHeight;
-      if (w > MAX_WIDTH) {
-        h = Math.round(h * (MAX_WIDTH / w));
-        w = MAX_WIDTH;
-      }
       canvas.width = w;
       canvas.height = h;
       canvas.getContext('2d').drawImage(video, 0, 0, w, h);
 
-      // Crop to guide frame region if available
+      // Determine the final canvas (possibly cropped to guide frame)
+      let finalCanvas = canvas;
       if (this._guideRect) {
         const g = this._guideRect;
         const scaleX = w / g.vpWidth;
@@ -892,13 +890,18 @@
         cropCanvas.width = cropW;
         cropCanvas.height = cropH;
         cropCanvas.getContext('2d').drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-
-        const raw = cropCanvas.toDataURL('image/jpeg', JPEG_QUALITY).replace(/^data:image\/[a-z]+;base64,/, '');
-        this._setImage(this._state.activeSide, raw);
-      } else {
-        const raw = canvas.toDataURL('image/jpeg', JPEG_QUALITY).replace(/^data:image\/[a-z]+;base64,/, '');
-        this._setImage(this._state.activeSide, raw);
+        finalCanvas = cropCanvas;
       }
+
+      // Generate preview base64 (lighter quality, just for display)
+      const raw = finalCanvas.toDataURL('image/jpeg', JPEG_QUALITY).replace(/^data:image\/[a-z]+;base64,/, '');
+      this._setImage(side, raw);
+
+      // Generate high-quality PNG blob for S3 upload (lossless — preserves MRZ/barcode detail)
+      finalCanvas.toBlob((blob) => {
+        if (blob) this._state[side + 'Blob'] = blob;
+      }, 'image/png');
+
       this._closeCamera();
     }
 
