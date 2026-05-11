@@ -31,7 +31,7 @@
  */
 (() => {
   const MAX_WIDTH = 1920;
-  const JPEG_QUALITY = 0.85;
+  const JPEG_QUALITY = 0.92;
   const POLL_INTERVAL_MS = 3000;
   const OPENCV_CDN = 'https://docs.opencv.org/4.7.0/opencv.js';
   const JSCANIFY_CDN = 'https://cdn.jsdelivr.net/gh/puffinsoft/jscanify@master/src/jscanify.min.js';
@@ -510,7 +510,7 @@
     constructor() {
       super();
       this.attachShadow({ mode: 'open' });
-      this._state = { frontBase64: null, backBase64: null, activeSide: null };
+      this._state = { frontBase64: null, backBase64: null, frontBlob: null, backBlob: null, activeSide: null };
       this._cameraStream = null;
       this._autoCaptured = false;
       this._guideRect = null;
@@ -609,6 +609,7 @@
 
     _clearImage(side) {
       this._state[side + 'Base64'] = null;
+      this._state[side + 'Blob'] = null;
       const preview = this.$(side + 'Preview');
       const placeholder = this.$(side + 'Placeholder');
       const clearBtn = this.$(side + 'ClearBtn');
@@ -630,6 +631,11 @@
     _handleFile(event, side) {
       const file = event.target.files[0];
       if (!file) return;
+
+      // Store original file bytes for high-quality S3 upload
+      this._state[side + 'Blob'] = file;
+
+      // Generate preview from canvas (lower quality OK for display)
       const img = new Image();
       img.onload = async () => {
         const raw = this._compressAndEncode(img);
@@ -973,9 +979,10 @@
         }
 
         // ── 2. Upload images directly to S3 via presigned PUT URLs ──
+        // Prefer original file blob (preserves full quality) over canvas-encoded base64
         this.$('loadingText').textContent = 'Subiendo imagen frontal...';
 
-        const frontBlob = this._base64ToBlob(this._state.frontBase64);
+        const frontBlob = this._state.frontBlob || this._base64ToBlob(this._state.frontBase64);
         const frontUploadRes = await fetch(uploadUrls.front, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/octet-stream' },
@@ -988,10 +995,10 @@
           return;
         }
 
-        if (this._state.backBase64 && uploadUrls.back) {
+        if ((this._state.backBlob || this._state.backBase64) && uploadUrls.back) {
           this.$('loadingText').textContent = 'Subiendo imagen reversa...';
 
-          const backBlob = this._base64ToBlob(this._state.backBase64);
+          const backBlob = this._state.backBlob || this._base64ToBlob(this._state.backBase64);
           const backUploadRes = await fetch(uploadUrls.back, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/octet-stream' },
@@ -1110,6 +1117,8 @@
     _reset() {
       this._state.frontBase64 = null;
       this._state.backBase64 = null;
+      this._state.frontBlob = null;
+      this._state.backBlob = null;
       this._clearImage('front');
       this._clearImage('back');
       this._showPhase('capture');
