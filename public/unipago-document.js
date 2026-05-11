@@ -8,35 +8,137 @@
  *   1. POST /session         → get presigned upload URLs
  *   2. PUT to S3             → upload images directly
  *   3. POST /process/{id}    → trigger analysis
- *   4. GET  /results/{id}    → poll for results (OAuth2)
  * 
- * Usage:
- *   <script src="unipago-document.js"></script>
+ * The SDK emits sessionId on completion. Polling for results is the
+ * host application's responsibility (server-to-server recommended).
+ * 
+ * Usage (config object):
+ *   <unipago-document id="doc"></unipago-document>
+ *   <script>
+ *     document.getElementById('doc').config = {
+ *       apiKey: 'pk_test_123',
+ *       apiUrl: 'https://...external/document',
+ *       numeroIdentificacion: '40238295428',
+ *     };
+ *   </script>
+ * 
+ * Usage (HTML attributes, backward compatible):
  *   <unipago-document
  *     api-key="pk_test_123"
  *     api-url="https://...external/document"
- *     results-url="https://...external/document/results"
  *     numero-identificacion="40238295428"
- *     oauth-client-id="..."
- *     oauth-client-secret="..."
- *     oauth-token-url="https://...amazoncognito.com/oauth2/token"
- *     oauth-scopes="impronta/api/read impronta/api/write"
+ *     auto-capture
  *   ></unipago-document>
  * 
  * Events:
- *   - unipago-document-complete  → { detail: { sessionId, status, score, ... } }
+ *   - unipago-document-complete  → { detail: { sessionId, status: 'PROCESSING' } }
  *   - unipago-document-error     → { detail: { error: "message" } }
  * 
- * @version 2.0.0
+ * @version 3.0.0
  */
 (() => {
-  const MAX_WIDTH = 1920;
-  const JPEG_QUALITY = 0.92;
-  const POLL_INTERVAL_MS = 3000;
   const OPENCV_CDN = 'https://docs.opencv.org/4.7.0/opencv.js';
   const JSCANIFY_CDN = 'https://cdn.jsdelivr.net/gh/puffinsoft/jscanify@master/src/jscanify.min.js';
-  const AUTO_CAPTURE_STABLE_MS = 1500;
-  const DETECTION_INTERVAL_MS = 100;
+
+  // ── Default Configuration ─────────────────────
+  // Clients override only what they need via .config = { ... }
+  const DEFAULT_CONFIG = {
+    // Required (no useful default)
+    apiKey: '',
+    apiUrl: '',
+    numeroIdentificacion: '',
+
+    // Capture behavior
+    autoCapture: true,
+    autoCaptureStableMs: 1500,
+    detectionContourThreshold: 80,
+    detectionIntervalMs: 100,
+
+    // Compression
+    captureFormat: 'image/jpeg',
+    jpegPreviewQuality: 0.92,
+    jpegUploadQuality: 0.85,
+    maxImageWidth: 1920,
+
+    // Quality gate
+    qualityGate: {
+      enabled: true,
+      sharpnessReject: 50,
+      sharpnessWarn: 100,
+      brightnessMin: 50,
+      brightnessMax: 220,
+      glareRejectPercent: 5,
+      glareWarnPercent: 2,
+    },
+
+    // Upload resilience
+    upload: {
+      maxRetries: 3,
+      retryBackoffMs: 1000,
+    },
+
+    // UI text (i18n)
+    text: {
+      headerTitle: 'Validación de Documento',
+      headerSubtitle: 'Capture el frente y reverso de la cédula',
+      frontLabel: '📄 Frente de la Cédula',
+      backLabel: '📄 Reverso de la Cédula',
+      placeholderText: 'Tome una foto o suba una imagen',
+      btnCamera: '📷 Tomar Foto',
+      btnUpload: '📁 Subir Archivo',
+      btnClear: '✕ Quitar',
+      btnSubmit: 'Analizar Documento',
+      btnRetry: 'Volver a Intentar',
+      cameraHint: '🪪 Coloque la cédula dentro del marco',
+      cameraDetected: '✅ Cédula detectada',
+      cameraDetectedHold: '✅ Cédula detectada — mantenga fijo',
+      cameraCapturing: '📸 Capturando...',
+      loadingSession: 'Creando sesión...',
+      loadingFront: 'Subiendo imagen frontal...',
+      loadingBack: 'Subiendo imagen reversa...',
+      loadingProcess: 'Iniciando análisis...',
+      doneSuccess: 'Documento enviado para análisis',
+      doneSuccessDetail: 'Tu aplicación recibirá los resultados.',
+      doneError: 'Error',
+      doneErrorDetail: 'Ocurrió un error inesperado.',
+      qualityBlurry: '📷 Imagen borrosa — mantenga el teléfono fijo',
+      qualityLowFocus: '📷 Enfoque bajo — acerque el documento',
+      qualityTooDark: '🔦 Muy oscuro — busque mejor iluminación',
+      qualityTooBright: '☀️ Muy brillante — evite luz directa',
+      qualityGlareHard: '✨ Reflejo detectado — incline el documento',
+      qualityGlareWarn: '✨ Posible reflejo — ajuste el ángulo',
+    },
+
+    // Theme (CSS custom properties)
+    theme: {
+      fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      bg: '#0f172a',
+      card: '#1e293b',
+      border: '#334155',
+      text: '#f1f5f9',
+      textSecondary: '#94a3b8',
+      textMuted: '#64748b',
+      accentGreen: '#10b981',
+      accentGreenHover: '#059669',
+      accentBlue: '#3b82f6',
+      error: '#ef4444',
+      warning: '#f59e0b',
+    },
+  };
+
+  function _deepMerge(target, ...sources) {
+    for (const source of sources) {
+      if (!source) continue;
+      for (const key of Object.keys(source)) {
+        if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+          target[key] = _deepMerge(target[key] || {}, source[key]);
+        } else {
+          target[key] = source[key];
+        }
+      }
+    }
+    return target;
+  }
 
   const STYLES = `
     :host {
@@ -518,14 +620,26 @@
       this._detectionRAF = null;
       this._stableStart = 0;
       this._scanner = null;
+      this._config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+      this._configExplicit = false;
     }
 
     static get observedAttributes() {
-      return [
-        'api-key', 'api-url', 'results-url', 'numero-identificacion',
-        'oauth-client-id', 'oauth-client-secret', 'oauth-token-url', 'oauth-scopes',
-        'auto-capture'
-      ];
+      return ['api-key', 'api-url', 'numero-identificacion', 'auto-capture'];
+    }
+
+    // ── Config property ──────────────────────────
+    set config(userConfig) {
+      this._configExplicit = true;
+      this._config = _deepMerge(JSON.parse(JSON.stringify(DEFAULT_CONFIG)), userConfig);
+      if (this.shadowRoot?.querySelector('.sdk-root')) {
+        this._applyTheme();
+        this._applyText();
+      }
+    }
+
+    get config() {
+      return this._config;
     }
 
     connectedCallback() {
@@ -538,6 +652,19 @@
       wrapper.innerHTML = TEMPLATE;
       this.shadowRoot.appendChild(wrapper);
 
+      // Backward compat: merge HTML attributes into config
+      const attrConfig = {};
+      if (this.getAttribute('api-key')) attrConfig.apiKey = this.getAttribute('api-key');
+      if (this.getAttribute('api-url')) attrConfig.apiUrl = this.getAttribute('api-url');
+      if (this.getAttribute('numero-identificacion')) attrConfig.numeroIdentificacion = this.getAttribute('numero-identificacion');
+      if (this.hasAttribute('auto-capture')) attrConfig.autoCapture = true;
+      // Merge: explicit .config > HTML attributes > defaults
+      if (!this._configExplicit) {
+        this._config = _deepMerge(JSON.parse(JSON.stringify(DEFAULT_CONFIG)), attrConfig);
+      }
+
+      this._applyTheme();
+      this._applyText();
       this._bindEvents();
 
       // Preload OpenCV + jscanify so they're ready when camera opens
@@ -548,16 +675,35 @@
       this._closeCamera();
     }
 
-    // ── Config getters ──────────────────────────
-    get apiKey() { return this.getAttribute('api-key') || ''; }
-    get apiUrl() { return this.getAttribute('api-url') || ''; }
-    get resultsUrl() { return this.getAttribute('results-url') || ''; }
-    get numeroId() { return this.getAttribute('numero-identificacion') || ''; }
-    get oauthClientId() { return this.getAttribute('oauth-client-id') || ''; }
-    get oauthClientSecret() { return this.getAttribute('oauth-client-secret') || ''; }
-    get oauthTokenUrl() { return this.getAttribute('oauth-token-url') || ''; }
-    get oauthScopes() { return this.getAttribute('oauth-scopes') || 'impronta/api/read impronta/api/write'; }
-    get autoCapture() { return this.hasAttribute('auto-capture'); }
+    // ── Theme + Text application ────────────────
+    _applyTheme() {
+      const t = this._config.theme;
+      const host = this.shadowRoot.host;
+      if (!host) return;
+      host.style.setProperty('--bg', t.bg);
+      host.style.setProperty('--card', t.card);
+      host.style.setProperty('--border', t.border);
+      host.style.setProperty('--text-secondary', t.textSecondary);
+      host.style.setProperty('--text-muted', t.textMuted);
+      host.style.setProperty('--accent-green', t.accentGreen);
+      host.style.setProperty('--accent-green-hover', t.accentGreenHover);
+      host.style.setProperty('--accent-blue', t.accentBlue);
+      host.style.setProperty('--error', t.error);
+      host.style.setProperty('--warning', t.warning);
+      if (t.fontFamily) host.style.fontFamily = t.fontFamily;
+    }
+
+    _applyText() {
+      const t = this._config.text;
+      const h2 = this.shadowRoot.querySelector('.sdk-header h2');
+      const p = this.shadowRoot.querySelector('.sdk-header p');
+      if (h2) h2.textContent = t.headerTitle;
+      if (p) p.textContent = t.headerSubtitle;
+      const submitBtn = this.$('submitBtn');
+      if (submitBtn) submitBtn.textContent = t.btnSubmit;
+      const retryBtn = this.$('retryBtn');
+      if (retryBtn) retryBtn.textContent = t.btnRetry;
+    }
 
     // ── DOM helpers ─────────────────────────────
     $(id) { return this.shadowRoot.getElementById(id); }
@@ -627,19 +773,26 @@
       this.$('submitBtn').disabled = !(this._state.frontBase64 && this._state.backBase64);
     }
 
-    // ── File upload ─────────────────────────────
+    // ── File upload (normalized through canvas) ─
     _handleFile(event, side) {
       const file = event.target.files[0];
       if (!file) return;
 
-      // Store original file bytes for high-quality S3 upload
-      this._state[side + 'Blob'] = file;
-
-      // Generate preview from canvas (lower quality OK for display)
       const img = new Image();
-      img.onload = async () => {
-        const raw = this._compressAndEncode(img);
+      img.onload = () => {
+        const { canvas } = this._normalizeImage(img);
+
+        // Preview base64
+        const raw = canvas.toDataURL('image/jpeg', this._config.jpegPreviewQuality)
+          .replace(/^data:image\/[a-z]+;base64,/, '');
         this._setImage(side, raw);
+
+        // S3 upload blob (configured format + quality)
+        canvas.toBlob((blob) => {
+          if (blob) this._state[side + 'Blob'] = blob;
+        }, this._config.captureFormat, this._config.jpegUploadQuality);
+
+        URL.revokeObjectURL(img.src);
       };
       img.src = URL.createObjectURL(file);
       event.target.value = '';
@@ -660,7 +813,7 @@
         this.$('cameraModal').classList.add('active');
         this.$('cameraCaptureBtn').classList.remove('ready');
         this.$('guideFrame')?.classList.remove('ready');
-        this._setDetectionStatus('none', '🪪 Coloque la cédula dentro del marco');
+        this._setDetectionStatus('none', this._config.text.cameraHint);
 
         video.addEventListener('loadedmetadata', () => this._positionGuideFrame(), { once: true });
         this._resizeObserver = new ResizeObserver(() => this._positionGuideFrame());
@@ -745,7 +898,7 @@
         this._detectionRAF = requestAnimationFrame(detect);
 
         const now = performance.now();
-        if (now - lastTime < DETECTION_INTERVAL_MS) return;
+        if (now - lastTime < this._config.detectionIntervalMs) return;
         lastTime = now;
 
         if (!video.videoWidth || !this._guideRect) return;
@@ -808,14 +961,60 @@
             if (area > minArea && area < maxArea) meaningfulCount++;
           }
 
+          // ── Quality Gate ────────────────────────
+          const qg = this._config.qualityGate;
+          const txt = this._config.text;
+          let qualityOk = true;
+          let qualityIssue = '';
+
+          if (qg.enabled) {
+            // 1. Blur detection (Laplacian variance)
+            const laplacian = new cv.Mat();
+            cv.Laplacian(gray, laplacian, cv.CV_64F);
+            const meanMat = new cv.Mat();
+            const stdMat = new cv.Mat();
+            cv.meanStdDev(laplacian, meanMat, stdMat);
+            const sharpness = Math.pow(stdMat.doubleAt(0, 0), 2);
+            laplacian.delete(); meanMat.delete(); stdMat.delete();
+
+            if (sharpness < qg.sharpnessReject) {
+              qualityOk = false;
+              qualityIssue = txt.qualityBlurry;
+            } else if (sharpness < qg.sharpnessWarn) {
+              qualityIssue = txt.qualityLowFocus;
+            }
+
+            // 2. Brightness check
+            const meanBrightness = cv.mean(gray);
+            const brightness = meanBrightness[0];
+            if (brightness < qg.brightnessMin) {
+              qualityOk = false;
+              qualityIssue = txt.qualityTooDark;
+            } else if (brightness > qg.brightnessMax) {
+              qualityOk = false;
+              qualityIssue = txt.qualityTooBright;
+            }
+
+            // 3. Glare detection (% pixels > 240)
+            const highThresh = new cv.Mat();
+            cv.threshold(gray, highThresh, 240, 255, cv.THRESH_BINARY);
+            const glarePixels = cv.countNonZero(highThresh);
+            const glarePercent = (glarePixels / totalPixels) * 100;
+            highThresh.delete();
+
+            if (glarePercent > qg.glareRejectPercent) {
+              qualityOk = false;
+              qualityIssue = txt.qualityGlareHard;
+            } else if (glarePercent > qg.glareWarnPercent) {
+              qualityIssue = txt.qualityGlareWarn;
+            }
+          }
+
           src.delete(); gray.delete(); thresh.delete();
           contours.delete(); hierarchy.delete();
 
-          // Full card ≈ 80+ contours (text, patterns, photo, lines)
-          // Partial card or face only = fewer contours
-          const detected = meaningfulCount > 80;
-
-          console.log('[unipago-document] contours:', meaningfulCount, 'detected:', detected);
+          const hasDocument = meaningfulCount > this._config.detectionContourThreshold;
+          const detected = hasDocument && qualityOk;
 
           if (detected) {
             if (this._stableStart === 0) this._stableStart = now;
@@ -824,24 +1023,31 @@
             this.$('guideFrame')?.classList.add('ready');
             this.$('cameraCaptureBtn').classList.add('ready');
 
-            if (this.autoCapture && stableMs >= AUTO_CAPTURE_STABLE_MS && !this._autoCaptured) {
-              this._setDetectionStatus('capturing', '📸 Capturando...');
+            if (this._config.autoCapture && stableMs >= this._config.autoCaptureStableMs && !this._autoCaptured) {
+              this._setDetectionStatus('capturing', txt.cameraCapturing);
               this._autoCaptured = true;
               setTimeout(() => this._captureFrame(), 200);
               return;
             }
 
-            const pct = this.autoCapture ? Math.min(100, (stableMs / AUTO_CAPTURE_STABLE_MS) * 100) : 0;
+            const pct = this._config.autoCapture ? Math.min(100, (stableMs / this._config.autoCaptureStableMs) * 100) : 0;
             this.$('autoProgress').style.width = pct + '%';
-            this._setDetectionStatus('detected', this.autoCapture
-              ? '✅ Cédula detectada — mantenga fijo'
-              : '✅ Cédula detectada');
+            this._setDetectionStatus('detected', this._config.autoCapture
+              ? txt.cameraDetectedHold
+              : txt.cameraDetected);
+          } else if (hasDocument && !qualityOk) {
+            // Document found but quality fails
+            this._stableStart = 0;
+            this.$('guideFrame')?.classList.remove('ready');
+            this.$('cameraCaptureBtn').classList.remove('ready');
+            this.$('autoProgress').style.width = '0%';
+            this._setDetectionStatus('none', qualityIssue);
           } else {
             this._stableStart = 0;
             this.$('guideFrame')?.classList.remove('ready');
             this.$('cameraCaptureBtn').classList.remove('ready');
             this.$('autoProgress').style.width = '0%';
-            this._setDetectionStatus('none', '🪪 Coloque la cédula dentro del marco');
+            this._setDetectionStatus('none', txt.cameraHint);
           }
         } catch (e) {
           console.error('[unipago-document] detection error:', e.message);
@@ -894,30 +1100,37 @@
       }
 
       // Generate preview base64 (lighter quality, just for display)
-      const raw = finalCanvas.toDataURL('image/jpeg', JPEG_QUALITY).replace(/^data:image\/[a-z]+;base64,/, '');
+      const raw = finalCanvas.toDataURL('image/jpeg', this._config.jpegPreviewQuality).replace(/^data:image\/[a-z]+;base64,/, '');
       this._setImage(side, raw);
 
-      // Generate high-quality PNG blob for S3 upload (lossless — preserves MRZ/barcode detail)
+      // Generate upload blob using configured format + quality (JPEG Q85 by default)
       finalCanvas.toBlob((blob) => {
         if (blob) this._state[side + 'Blob'] = blob;
-      }, 'image/png');
+      }, this._config.captureFormat, this._config.jpegUploadQuality);
 
       this._closeCamera();
     }
 
-    // ── Image compression ───────────────────────
-    _compressAndEncode(img) {
+    // ── Image normalization ──────────────────────
+    // Resize + canvas redraw strips EXIF metadata (GPS, device info)
+    _normalizeImage(img) {
       const canvas = document.createElement('canvas');
       let w = img.naturalWidth || img.width;
       let h = img.naturalHeight || img.height;
-      if (w > MAX_WIDTH) {
-        h = Math.round(h * (MAX_WIDTH / w));
-        w = MAX_WIDTH;
+      const maxW = this._config.maxImageWidth;
+      if (w > maxW) {
+        h = Math.round(h * (maxW / w));
+        w = maxW;
       }
       canvas.width = w;
       canvas.height = h;
       canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-      return canvas.toDataURL('image/jpeg', JPEG_QUALITY).replace(/^data:image\/[a-z]+;base64,/, '');
+      return { canvas, width: w, height: h };
+    }
+
+    _compressAndEncode(img) {
+      const { canvas } = this._normalizeImage(img);
+      return canvas.toDataURL('image/jpeg', this._config.jpegPreviewQuality).replace(/^data:image\/[a-z]+;base64,/, '');
     }
 
     // ── Phase transitions ───────────────────────
@@ -939,16 +1152,37 @@
       return new Blob([byteArray], { type: contentType });
     }
 
+    // ── Upload with retry ────────────────────────
+    async _uploadWithRetry(url, blob) {
+      const { maxRetries, retryBackoffMs } = this._config.upload;
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          const res = await fetch(url, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: blob,
+          });
+          if (res.ok) return res;
+          if (attempt === maxRetries) throw new Error(`Upload failed: ${res.status}`);
+        } catch (err) {
+          if (attempt === maxRetries) throw err;
+          await new Promise(r => setTimeout(r, Math.pow(2, attempt - 1) * retryBackoffMs));
+        }
+      }
+    }
+
     // ── Submit flow (3-step presigned S3 upload) ─────
     async _submit() {
-      if (!this.apiUrl) return this._emitError("Falta atributo 'api-url'.");
-      if (!this.apiKey) return this._emitError("Falta atributo 'api-key'.");
-      if (!this.numeroId) return this._emitError("Falta atributo 'numero-identificacion'.");
+      const cfg = this._config;
+      const txt = cfg.text;
+      if (!cfg.apiUrl) return this._emitError("Falta 'apiUrl' en config.");
+      if (!cfg.apiKey) return this._emitError("Falta 'apiKey' en config.");
+      if (!cfg.numeroIdentificacion) return this._emitError("Falta 'numeroIdentificacion' en config.");
 
-      const baseUrl = this.apiUrl.replace(/\/+$/, '');
+      const baseUrl = cfg.apiUrl.replace(/\/+$/, '');
 
       this._showPhase('loading');
-      this.$('loadingText').textContent = 'Creando sesión...';
+      this.$('loadingText').textContent = txt.loadingSession;
       this.$('loadingDetail').textContent = '';
 
       try {
@@ -957,10 +1191,10 @@
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-api-key': this.apiKey,
+            'x-api-key': cfg.apiKey,
           },
           body: JSON.stringify({
-            numeroIdentificacion: this.numeroId,
+            numeroIdentificacion: cfg.numeroIdentificacion,
           }),
         });
 
@@ -982,45 +1216,24 @@
         }
 
         // ── 2. Upload images directly to S3 via presigned PUT URLs ──
-        // Prefer original file blob (preserves full quality) over canvas-encoded base64
-        this.$('loadingText').textContent = 'Subiendo imagen frontal...';
+        this.$('loadingText').textContent = txt.loadingFront;
 
         const frontBlob = this._state.frontBlob || this._base64ToBlob(this._state.frontBase64);
-        const frontUploadRes = await fetch(uploadUrls.front, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: frontBlob,
-        });
-
-        if (!frontUploadRes.ok) {
-          this._emitError(`Error subiendo imagen frontal: ${frontUploadRes.status}`);
-          this._showDone(false, 'Error subiendo imagen');
-          return;
-        }
+        await this._uploadWithRetry(uploadUrls.front, frontBlob);
 
         if ((this._state.backBlob || this._state.backBase64) && uploadUrls.back) {
-          this.$('loadingText').textContent = 'Subiendo imagen reversa...';
+          this.$('loadingText').textContent = txt.loadingBack;
 
           const backBlob = this._state.backBlob || this._base64ToBlob(this._state.backBase64);
-          const backUploadRes = await fetch(uploadUrls.back, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/octet-stream' },
-            body: backBlob,
-          });
-
-          if (!backUploadRes.ok) {
-            this._emitError(`Error subiendo imagen reversa: ${backUploadRes.status}`);
-            this._showDone(false, 'Error subiendo imagen');
-            return;
-          }
+          await this._uploadWithRetry(uploadUrls.back, backBlob);
         }
 
         // ── 3. POST /process/{sessionId} → trigger analysis ──
-        this.$('loadingText').textContent = 'Iniciando análisis...';
+        this.$('loadingText').textContent = txt.loadingProcess;
 
         const processRes = await fetch(`${baseUrl}/process/${sessionId}`, {
           method: 'POST',
-          headers: { 'x-api-key': this.apiKey },
+          headers: { 'x-api-key': cfg.apiKey },
         });
 
         if (!processRes.ok) {
@@ -1030,58 +1243,9 @@
           return;
         }
 
-        // ── 4. Get OAuth2 token for polling ───────────────
-        this.$('loadingText').textContent = 'Obteniendo token de autenticación...';
-
-        const basicAuth = btoa(`${this.oauthClientId}:${this.oauthClientSecret}`);
-        const tokenRes = await fetch(this.oauthTokenUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Authorization': `Basic ${basicAuth}`,
-          },
-          body: new URLSearchParams({
-            'grant_type': 'client_credentials',
-            'scope': this.oauthScopes,
-          }),
-        });
-
-        if (!tokenRes.ok) throw new Error(`Token error: ${tokenRes.status}`);
-        const accessToken = (await tokenRes.json()).access_token;
-
-        // ── 5. Poll for results ───────────────
-        this.$('loadingText').textContent = 'Analizando documento...';
-        let pollCount = 0;
-
-        const pollInterval = setInterval(async () => {
-          pollCount++;
-          this.$('loadingDetail').textContent = `Consultando resultados (intento #${pollCount})...`;
-
-          try {
-            const pollRes = await fetch(`${this.resultsUrl}/${sessionId}`, {
-              method: 'GET',
-              headers: { 'Authorization': `Bearer ${accessToken}` },
-            });
-
-            if (!pollRes.ok) return; // Keep polling on transient errors
-
-            const pollData = await pollRes.json();
-
-            if (pollData.status && pollData.status !== 'PROCESSING' && pollData.status !== 'PENDING' && pollData.status !== 'PROCESANDO' && pollData.status !== 'PENDIENTE') {
-              clearInterval(pollInterval);
-              const ok = pollData.status !== 'FAILED' && pollData.status !== 'ERROR' && pollData.status !== 'FALLIDO';
-              if (ok) {
-                this._emitComplete(pollData);
-                this._showDone(true);
-              } else {
-                this._emitError(pollData.reason || `Status: ${pollData.status}`);
-                this._showDone(false, pollData.reason || pollData.status);
-              }
-            }
-          } catch (e) {
-            // Keep polling on network errors
-          }
-        }, POLL_INTERVAL_MS);
+        // ── 4. Done — emit sessionId, host app handles polling ──
+        this._emitComplete({ sessionId, status: 'PROCESSING' });
+        this._showDone(true);
 
       } catch (err) {
         this._emitError(err.message);
@@ -1090,13 +1254,14 @@
     }
 
     _showDone(success, message) {
+      const txt = this._config.text;
       this._showPhase('done');
       this.$('doneIcon').textContent = success ? '✅' : '❌';
-      this.$('doneTitle').textContent = success ? 'Análisis Completo' : 'Error';
+      this.$('doneTitle').textContent = success ? txt.doneSuccess : txt.doneError;
       this.$('doneTitle').style.color = success ? '#34d399' : '#f87171';
       this.$('doneSubtitle').textContent = success
-        ? 'Los resultados han sido enviados a tu aplicación.'
-        : (message || 'Ocurrió un error inesperado.');
+        ? txt.doneSuccessDetail
+        : (message || txt.doneErrorDetail);
     }
 
     // ── Event emission ──────────────────────────
