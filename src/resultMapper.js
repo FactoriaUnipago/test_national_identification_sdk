@@ -77,8 +77,25 @@ export function mapDocumentResult(data) {
     return { outcome, extractedData, auditImages, fraudAnalysis, rawData: data };
   }
 
-  // ── SUCCEEDED ──
-  if (['SUCCEEDED', 'SUCCESS', 'COMPLETADO', 'APROBADO'].includes(status)) {
+  // ── SUCCEEDED but REJECTED by verdict ──
+  const verdict = (data?.verdict ?? '').toUpperCase();
+  if (['SUCCEEDED', 'SUCCESS', 'COMPLETADO'].includes(status) && ['RECHAZADO', 'REJECTED'].includes(verdict)) {
+    const reason = humanizeReason(data?.reason || '');
+    outcome = {
+      type: 'failed',
+      headline: 'Documento rechazado',
+      description: reason,
+      confidenceLabel: '',
+      confidenceLevel: pct,
+      accentClass: 'error',
+      primaryCTA: { label: 'Tomar nuevas fotos', action: 'retry' },
+      secondaryCTA: { label: 'Contactar soporte', action: 'support' },
+    };
+    return { outcome, extractedData, auditImages, fraudAnalysis, rawData: data };
+  }
+
+  // ── SUCCEEDED + APROBADO ──
+  if (['SUCCEEDED', 'SUCCESS', 'COMPLETADO', 'APROBADO'].includes(status) || verdict === 'APROBADO') {
     if (pct >= 85) {
       outcome = {
         type: 'verified',
@@ -144,6 +161,9 @@ function humanizeReason(raw) {
   if (!raw) return 'Puede deberse a la calidad de la imagen o iluminación. Ubícate en un lugar bien iluminado e intenta de nuevo.';
 
   const patterns = [
+    [/fraude.*cedula.*no coincide|cedula.*no coincide/i, 'El número de cédula del documento no coincide con el proporcionado. Verifique que está escaneando el documento correcto.'],
+    [/fraude/i, 'Se detectaron inconsistencias en el documento. Asegúrese de utilizar un documento auténtico.'],
+    [/checksum.*invalido/i, 'El documento no pasó la verificación de integridad. Esto puede indicar una imagen de mala calidad o un documento no válido.'],
     [/mrz.*(not|no).*(detect|encontr)/i, 'No pudimos leer claramente algunos elementos del reverso del documento. Intente capturar el reverso con mejor iluminación.'],
     [/blur|borrosa?/i, 'La imagen parece estar borrosa. Mantenga el dispositivo fijo y asegure buena iluminación al tomar la foto.'],
     [/glare|reflejo|brillo/i, 'Se detectó un reflejo en la imagen. Evite la luz directa sobre el documento.'],
