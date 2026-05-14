@@ -56,10 +56,69 @@ function getIcon(type) {
   }
 }
 
+/* ── Recursive Property Renderer ── */
+function RenderProps({ data, prefix = '' }) {
+  if (!data || typeof data !== 'object') return null;
+
+  return Object.entries(data).map(([key, value]) => {
+    const label = prefix ? `${prefix}.${key}` : key;
+
+    // Skip rendering long URLs inline — they'll be in the image buttons
+    if (typeof value === 'string' && value.startsWith('http') && value.length > 80) {
+      return (
+        <div className="details-row" key={label}>
+          <span className="details-label">{key}</span>
+          <a
+            href={value}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="details-value details-link"
+            title={value}
+          >
+            Ver enlace ↗
+          </a>
+        </div>
+      );
+    }
+
+    // Nested object/array → section header + recurse
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return (
+        <div key={label} className="details-section">
+          <div className="details-section-header">{key}</div>
+          <RenderProps data={value} prefix="" />
+        </div>
+      );
+    }
+
+    // Array
+    if (Array.isArray(value)) {
+      return (
+        <div className="details-row" key={label}>
+          <span className="details-label">{key}</span>
+          <span className="details-value">{value.length > 0 ? value.join(', ') : '—'}</span>
+        </div>
+      );
+    }
+
+    // Primitives
+    const display = value === null || value === undefined ? '—'
+      : typeof value === 'boolean' ? (value ? 'Sí' : 'No')
+      : String(value);
+
+    return (
+      <div className="details-row" key={label}>
+        <span className="details-label">{key}</span>
+        <span className="details-value" title={display}>{display}</span>
+      </div>
+    );
+  });
+}
+
 /* ── Component ── */
 export function ResultScreen({ data, onReset }) {
   const { outcome, extractedData, auditImages, fraudAnalysis, rawData } = mapDocumentResult(data);
-  const [showDetails, setShowDetails] = useState(false);
+  const [showDetails, setShowDetails] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [modalImage, setModalImage] = useState(null);
   const [toast, setToast] = useState(null);
@@ -120,11 +179,19 @@ export function ResultScreen({ data, onReset }) {
           {outcome.description}
         </p>
 
+        {/* ── Rejection / Error Reason Banner ── */}
+        {rawData?.reason && (outcome.type === 'failed' || outcome.type === 'error') && (
+          <div className="reason-banner fade-slide-up stagger-2">
+            <div className="reason-banner-label">Motivo</div>
+            <div className="reason-banner-text">{rawData.reason}</div>
+          </div>
+        )}
+
         {/* ── Trust Meter (only if confidence exists) ── */}
         {outcome.confidenceLevel > 0 && (
           <div className="trust-meter">
             <div className="trust-meter-header">
-              <span className="trust-meter-title">Nivel de confianza</span>
+              <span className="trust-meter-title">Confianza general</span>
               <span className={`trust-meter-value ${outcome.accentClass}`}>
                 {outcome.confidenceLevel}%
               </span>
@@ -139,6 +206,27 @@ export function ResultScreen({ data, onReset }) {
               {outcome.type === 'verified' || outcome.type === 'high_confidence' ? '✓' : '⚠'}{' '}
               {outcome.confidenceLabel}
             </span>
+          </div>
+        )}
+
+        {/* ── Verdict + Score Summary ── */}
+        {(rawData?.verdict || typeof rawData?.score === 'number') && (
+          <div className="extracted-data">
+            <div className="extracted-data-header">Resultado</div>
+            {rawData?.verdict && (
+              <div className="details-row">
+                <span className="details-label">Veredicto</span>
+                <span className={`trust-meter-label ${rawData.verdict === 'APROBADO' ? 'success' : 'error'}`}>
+                  {rawData.verdict === 'APROBADO' ? '✓ Aprobado' : '✕ Rechazado'}
+                </span>
+              </div>
+            )}
+            {typeof rawData?.score === 'number' && (
+              <div className="details-row">
+                <span className="details-label">Score</span>
+                <span className="details-value">{rawData.score}</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -167,7 +255,7 @@ export function ResultScreen({ data, onReset }) {
             </div>
             {typeof fraudAnalysis.front.confianza === 'number' && (
               <div className="details-row">
-                <span className="details-label">Confianza</span>
+                <span className="details-label">Confianza (análisis IA)</span>
                 <span className="details-value">{fraudAnalysis.front.confianza}%</span>
               </div>
             )}
@@ -177,6 +265,25 @@ export function ResultScreen({ data, onReset }) {
                 <p className="fraud-signals-text">{fraudAnalysis.front.senalesFraude.join(', ')}</p>
               </div>
             )}
+          </div>
+        )}
+
+        {/* ── Audit Images (always visible, not just in technical details) ── */}
+        {(auditImages?.front || auditImages?.back) && (
+          <div className="extracted-data">
+            <div className="extracted-data-header">Imágenes de auditoría</div>
+            <div className="details-actions" style={{ padding: '0.5rem 0' }}>
+              {auditImages?.front && (
+                <button className="btn btn-ghost" onClick={() => openImageModal(auditImages.front)}>
+                  📄 Ver frente
+                </button>
+              )}
+              {auditImages?.back && (
+                <button className="btn btn-ghost" onClick={() => openImageModal(auditImages.back)}>
+                  📄 Ver reverso
+                </button>
+              )}
+            </div>
           </div>
         )}
 
@@ -209,32 +316,7 @@ export function ResultScreen({ data, onReset }) {
 
         <div className={`details-panel ${showDetails ? 'open' : ''}`}>
           <div className="details-content">
-            {data.sessionId && (
-              <div className="details-row">
-                <span className="details-label">Session ID</span>
-                <span className="details-value" title={data.sessionId}>
-                  {truncate(data.sessionId)}
-                </span>
-              </div>
-            )}
-            {data.status && (
-              <div className="details-row">
-                <span className="details-label">Estado</span>
-                <span className="details-value">{data.status}</span>
-              </div>
-            )}
-            {typeof data.score === 'number' && (
-              <div className="details-row">
-                <span className="details-label">Score</span>
-                <span className="details-value">{data.score}/100</span>
-              </div>
-            )}
-            {data.verdict && (
-              <div className="details-row">
-                <span className="details-label">Veredicto</span>
-                <span className="details-value">{data.verdict}</span>
-              </div>
-            )}
+            <RenderProps data={rawData} />
 
             <div className="details-actions">
               {auditImages?.front && (

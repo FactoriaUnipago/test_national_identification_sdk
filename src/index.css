@@ -488,6 +488,98 @@ body {
   line-height: 1.5;
 }
 
+/* ── JSON Block (for copy only, not displayed) ── */
+.json-block {
+  display: none;
+}
+
+/* ── Details Section (recursive props) ── */
+.details-section {
+  margin-top: var(--space-sm);
+  padding-top: var(--space-sm);
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.details-section-header {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: var(--space-xs);
+  padding: var(--space-xs) 0;
+}
+
+.details-link {
+  color: var(--accent-info) !important;
+  text-decoration: none;
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.details-link:hover {
+  text-decoration: underline;
+}
+
+/* ── Reason Banner (rejection/error) ── */
+.reason-banner {
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  background: var(--accent-error-dim);
+  border: 1px solid rgba(248, 113, 113, 0.2);
+  border-radius: var(--radius-md);
+  text-align: left;
+}
+
+.reason-banner-label {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent-error);
+  margin-bottom: var(--space-xs);
+}
+
+.reason-banner-text {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+/* ── Extracted Data / Result Sections ── */
+.extracted-data,
+.fraud-analysis {
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  background: var(--surface-glass);
+  border: 1px solid var(--surface-glass-border);
+  border-radius: var(--radius-md);
+}
+
+.extracted-data-header {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: var(--space-sm);
+  padding-bottom: var(--space-xs);
+  border-bottom: 1px solid var(--surface-glass-border);
+}
+
+.fraud-signals {
+  margin-top: var(--space-sm);
+}
+
+.fraud-signals-text {
+  font-size: 0.8125rem;
+  color: var(--accent-warning);
+  margin-top: var(--space-xs);
+  line-height: 1.4;
+}
+
 /* ── Collapsible Panel ── */
 .details-toggle {
   display: flex;
@@ -529,7 +621,7 @@ body {
 }
 
 .details-panel.open {
-  max-height: 600px;
+  max-height: 3000px;
 }
 
 .details-content {
