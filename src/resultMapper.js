@@ -94,6 +94,22 @@ export function mapDocumentResult(data) {
     return { outcome, extractedData, auditImages, fraudAnalysis, rawData: data };
   }
 
+  // ── SUCCEEDED but MANUAL REVIEW by verdict ──
+  if (['SUCCEEDED', 'SUCCESS', 'COMPLETADO'].includes(status) && ['REVISION_MANUAL', 'MANUAL_REVIEW', 'REVIEW'].includes(verdict)) {
+    outcome = {
+      type: 'manual_review',
+      headline: 'Revisión en progreso',
+      description:
+        'Tu documento fue recibido correctamente. Nuestro equipo revisará la información manualmente. Este proceso suele tomar menos de 5 minutos.',
+      confidenceLabel: pct > 0 ? 'Requiere revisión' : '',
+      confidenceLevel: pct,
+      accentClass: 'warning',
+      primaryCTA: { label: 'Entendido', action: 'continue' },
+      secondaryCTA: { label: 'Contactar soporte', action: 'support' },
+    };
+    return { outcome, extractedData, auditImages, fraudAnalysis, rawData: data };
+  }
+
   // ── SUCCEEDED + APROBADO ──
   if (['SUCCEEDED', 'SUCCESS', 'COMPLETADO', 'APROBADO'].includes(status) || verdict === 'APROBADO') {
     if (pct >= 85) {

@@ -118,7 +118,7 @@ function RenderProps({ data, prefix = '' }) {
 /* ── Component ── */
 export function ResultScreen({ data, onReset }) {
   const { outcome, extractedData, auditImages, fraudAnalysis, rawData } = mapDocumentResult(data);
-  const [showDetails, setShowDetails] = useState(true);
+  const [showDetails, setShowDetails] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [modalImage, setModalImage] = useState(null);
   const [toast, setToast] = useState(null);
@@ -179,8 +179,8 @@ export function ResultScreen({ data, onReset }) {
           {outcome.description}
         </p>
 
-        {/* ── Rejection / Error Reason Banner ── */}
-        {rawData?.reason && (outcome.type === 'failed' || outcome.type === 'error') && (
+        {/* ── Reason Banner (shown for all non-success outcomes) ── */}
+        {rawData?.reason && outcome.type !== 'verified' && outcome.type !== 'high_confidence' && (
           <div className="reason-banner fade-slide-up stagger-2">
             <div className="reason-banner-label">Motivo</div>
             <div className="reason-banner-text">{rawData.reason}</div>
@@ -213,14 +213,19 @@ export function ResultScreen({ data, onReset }) {
         {(rawData?.verdict || typeof rawData?.score === 'number') && (
           <div className="extracted-data">
             <div className="extracted-data-header">Resultado</div>
-            {rawData?.verdict && (
-              <div className="details-row">
-                <span className="details-label">Veredicto</span>
-                <span className={`trust-meter-label ${rawData.verdict === 'APROBADO' ? 'success' : 'error'}`}>
-                  {rawData.verdict === 'APROBADO' ? '✓ Aprobado' : '✕ Rechazado'}
-                </span>
-              </div>
-            )}
+            {rawData?.verdict && (() => {
+              const v = rawData.verdict.toUpperCase();
+              const isApproved = v === 'APROBADO' || v === 'APPROVED';
+              const isReview = v === 'REVISION_MANUAL' || v === 'MANUAL_REVIEW' || v === 'REVIEW';
+              const label = isApproved ? '✓ Aprobado' : isReview ? '⏳ Revisión manual' : '✕ Rechazado';
+              const cls = isApproved ? 'success' : isReview ? 'warning' : 'error';
+              return (
+                <div className="details-row">
+                  <span className="details-label">Veredicto</span>
+                  <span className={`trust-meter-label ${cls}`}>{label}</span>
+                </div>
+              );
+            })()}
             {typeof rawData?.score === 'number' && (
               <div className="details-row">
                 <span className="details-label">Score</span>
